@@ -6,12 +6,12 @@ import time
 import nest_asyncio
 
 # --- CRITICAL FIX FOR DEPLOYMENT ---
-# This patches the asyncio loop to allow nested usage on Streamlit Cloud
 nest_asyncio.apply()
 
 # --- CONFIGURATION ---
-DATA_URL = "https://raw.githubusercontent.com/sherlock-project/sherlock/master/sherlock/resources/data.json"
-MAX_CONCURRENT_REQUESTS = 20  # Reduced from 50 to 20 to prevent memory crashes on free tier
+# UPDATED URL: The Sherlock project moved the file to 'sherlock_project/resources'
+DATA_URL = "https://raw.githubusercontent.com/sherlock-project/sherlock/master/sherlock_project/resources/data.json"
+MAX_CONCURRENT_REQUESTS = 20
 TIMEOUT_SECONDS = 5
 
 # --- SETUP PAGE ---
@@ -27,9 +27,6 @@ st.markdown("""
 
 # --- ASYNC SEARCH ENGINE ---
 async def fetch(session, site_name, site_data, username):
-    """
-    Checks a single site for the username.
-    """
     url = site_data["url"].format(username)
     error_type = site_data.get("errorType")
     
@@ -43,7 +40,7 @@ async def fetch(session, site_name, site_data, username):
             
             exists = False
             
-            # Sherlock Logic: Check if user exists based on site's specific error pattern
+            # Sherlock Logic
             if error_type == "status_code":
                 if status != 404:
                     exists = True
@@ -62,39 +59,30 @@ async def fetch(session, site_name, site_data, username):
                     "latency_ms": f"{latency:.0f}"
                 }
     except:
-        # Timeouts or connection errors are ignored
         pass
     return None
 
 async def run_search(username, site_data):
-    """
-    Orchestrates the asynchronous search across all sites.
-    """
     results = []
     connector = aiohttp.TCPConnector(limit=MAX_CONCURRENT_REQUESTS)
     
     async with aiohttp.ClientSession(connector=connector) as session:
         tasks = []
-        
-        # Create a task for every site
         for site_name, data in site_data.items():
             tasks.append(fetch(session, site_name, data, username))
         
-        # Progress bar logic
         progress_bar = st.progress(0)
         status_text = st.empty()
         completed = 0
         total = len(tasks)
         
-        # Run tasks as they complete
         for future in asyncio.as_completed(tasks):
             result = await future
             if result:
                 results.append(result)
             
             completed += 1
-            # Update progress every 5% to save UI rendering resources
-            if completed % (total // 20) == 0:
+            if completed % (total // 10) == 0: # Update less frequently to save memory
                  progress_bar.progress(completed / total)
                  status_text.text(f"Scanned {completed}/{total} sites...")
                  
@@ -118,39 +106,38 @@ with col1:
 
     start_btn = st.button("🚀 Start Scan")
 
-# --- MAIN EXECUTION BLOCK ---
+# --- MAIN EXECUTION ---
 if start_btn and target_username:
     with col2:
         try:
             # 1. Load Data
             with st.spinner("Fetching latest site signatures..."):
-                sites_df = pd.read_json(DATA_URL)
+                try:
+                    sites_df = pd.read_json(DATA_URL)
+                except Exception as e:
+                    st.error(f"Failed to load site data: {e}")
+                    st.stop()
                 
                 if search_mode == "Fast (Top 50 Sites)":
-                    # Slice dictionary for speed
                     sites_data = dict(list(sites_df.items())[:50])
                 else:
                     sites_data = dict(list(sites_df.items()))
 
-            # 2. Execute Async Search (The robust way)
+            # 2. Execute Async Search
             st.write(f"🔎 Scanning **{len(sites_data)}** platforms for '{target_username}'...")
             
-            # We use the existing loop via nest_asyncio rather than creating a new one
             loop = asyncio.get_event_loop()
             results = loop.run_until_complete(run_search(target_username, sites_data))
             
             # 3. Display Results
             if results:
                 df = pd.DataFrame(results)
-                
                 st.success(f"✅ Found {len(df)} matches!")
                 
-                # Metrics
                 m1, m2 = st.columns(2)
                 m1.metric("Matches", len(df))
                 m2.metric("Scan Time", "Completed")
                 
-                # Table with clickable links
                 st.dataframe(
                     df[['site', 'url']],
                     column_config={
@@ -160,7 +147,6 @@ if start_btn and target_username:
                     hide_index=True
                 )
                 
-                # Download Button
                 csv = df.to_csv(index=False).encode('utf-8')
                 st.download_button("📥 Download Results (CSV)", csv, "osint_results.csv", "text/csv")
                 
@@ -169,5 +155,4 @@ if start_btn and target_username:
                 
         except Exception as e:
             st.error(f"System Error: {e}")
-            st.caption("Try refreshing the page or reducing search depth.")
-                    
+            
